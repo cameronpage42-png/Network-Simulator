@@ -1,0 +1,24 @@
+{
+  "name": "network-simulator",
+  "version": "1.0.0",
+  "description": "Network simulator proxy with web interface for testing different network conditions",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "network",
+    "simulator",
+    "proxy",
+    "throttle",
+    "latency"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "http-proxy": "^1.18.1",
+    "ws": "^8.14.2"
+  }
+}

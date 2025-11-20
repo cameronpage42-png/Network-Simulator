@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Simulator</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>
+                <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                    <path d="M2 12h20"></path>
+                </svg>
+                Network Simulator
+            </h1>
+            <div class="header-controls">
+                <div class="status-indicator" id="statusIndicator">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Disabled</span>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="enableToggle">
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </header>
+
+        <section class="connection-info">
+            <h3>Proxy Configuration</h3>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Host</span>
+                    <span class="info-value" id="proxyHost">Loading...</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Port</span>
+                    <span class="info-value">8888</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="presets-section">
+            <h2>Network Presets</h2>
+            <div class="presets-grid" id="presetsGrid">
+                <!-- Presets will be dynamically inserted -->
+            </div>
+        </section>
+
+        <section class="custom-section" id="customSection">
+            <h2>Custom Settings</h2>
+            <div class="controls-grid">
+                <div class="control-group">
+                    <label for="bandwidthInput">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                        </svg>
+                        Bandwidth
+                    </label>
+                    <div class="input-group">
+                        <input type="number" id="bandwidthInput" min="0" step="100" placeholder="0">
+                        <select id="bandwidthUnit">
+                            <option value="1">Bytes/s</option>
+                            <option value="1024" selected>KB/s</option>
+                            <option value="1048576">MB/s</option>
+                        </select>
+                    </div>
+                    <small>0 = unlimited</small>
+                </div>
+
+                <div class="control-group">
+                    <label for="latencyInput">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polyline points="12 6 12 12 16 14"></polyline>
+                        </svg>
+                        Latency
+                    </label>
+                    <div class="input-group">
+                        <input type="number" id="latencyInput" min="0" step="10" placeholder="0">
+                        <span class="unit">ms</span>
+                    </div>
+                    <small>Delay added to each request</small>
+                </div>
+
+                <div class="control-group">
+                    <label for="packetLossInput">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                            <line x1="12" y1="9" x2="12" y2="13"></line>
+                            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                        </svg>
+                        Packet Loss
+                    </label>
+                    <div class="input-group">
+                        <input type="number" id="packetLossInput" min="0" max="100" step="0.1" placeholder="0">
+                        <span class="unit">%</span>
+                    </div>
+                    <small>Percentage of dropped packets</small>
+                </div>
+            </div>
+            <button class="btn btn-primary" id="applyCustomBtn">Apply Custom Settings</button>
+        </section>
+
+        <section class="stats-section">
+            <h2>Statistics</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="7 10 12 15 17 10"></polyline>
+                            <line x1="12" y1="15" x2="12" y2="3"></line>
+                        </svg>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Total Requests</div>
+                        <div class="stat-value" id="totalRequests">0</div>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="9" cy="7" r="4"></circle>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                        </svg>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Active Connections</div>
+                        <div class="stat-value" id="activeConnections">0</div>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                        </svg>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Data Transferred</div>
+                        <div class="stat-value" id="bytesTransferred">0 B</div>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polyline points="12 6 12 12 16 14"></polyline>
+                        </svg>
+                    </div>
+                    <div class="stat-content">
+                        <div class="stat-label">Uptime</div>
+                        <div class="stat-value" id="uptime">0s</div>
+                    </div>
+                </div>
+            </div>
+            <button class="btn btn-secondary" id="resetStatsBtn">Reset Statistics</button>
+        </section>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
