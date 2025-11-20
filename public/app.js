@@ -2,19 +2,42 @@
 let ws;
 let currentSettings = {};
 let presets = {};
+let devices = [];
+let serverInfo = {};
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', () => {
     initializeWebSocket();
     loadStatus();
+    loadQRCodes();
     setupEventListeners();
-    displayProxyInfo();
 });
 
-// Display proxy configuration info
-function displayProxyInfo() {
-    const proxyHostEl = document.getElementById('proxyHost');
-    proxyHostEl.textContent = window.location.hostname;
+// Display proxy configuration info and load QR codes
+async function loadQRCodes() {
+    try {
+        // Load iOS QR code (link to profile download)
+        const profileUrl = `${window.location.origin}/api/config/ios.mobileconfig`;
+        const iosQRResponse = await fetch('/api/qr/proxy');
+        const iosQRData = await iosQRResponse.json();
+
+        const iosQREl = document.getElementById('iosQR');
+        if (iosQRData.qrCode) {
+            iosQREl.innerHTML = `<img src="${iosQRData.qrCode}" alt="iOS Setup QR Code">`;
+        }
+
+        // Load Android QR code
+        const androidQRResponse = await fetch('/api/qr/proxy');
+        const androidQRData = await androidQRResponse.json();
+
+        const androidQREl = document.getElementById('androidQR');
+        if (androidQRData.qrCode) {
+            androidQREl.innerHTML = `<img src="${androidQRData.qrCode}" alt="Android Setup QR Code">`;
+        }
+
+    } catch (error) {
+        console.error('Failed to load QR codes:', error);
+    }
 }
 
 // Initialize WebSocket connection
@@ -49,6 +72,15 @@ async function loadStatus() {
         const response = await fetch('/api/status');
         const data = await response.json();
         presets = data.presets;
+        serverInfo = {
+            serverIp: data.serverIp,
+            proxyPort: data.proxyPort,
+        };
+
+        // Update proxy info display
+        document.getElementById('proxyHost').textContent = data.serverIp || window.location.hostname;
+        document.getElementById('proxyPort').textContent = data.proxyPort || '8888';
+
         renderPresets();
         updateUI(data);
     } catch (error) {
@@ -88,25 +120,31 @@ function renderPresets() {
 }
 
 // Select a preset
-async function selectPreset(preset) {
+async function selectPreset(preset, deviceId = null) {
     try {
+        const body = { preset };
+        if (deviceId) {
+            body.deviceId = deviceId;
+        }
+
         const response = await fetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ preset }),
+            body: JSON.stringify(body),
         });
 
         if (response.ok) {
             const data = await response.json();
-            updateUI({ settings: data.settings });
 
-            // Show custom section if custom preset is selected
-            const customSection = document.getElementById('customSection');
-            if (preset === 'custom') {
-                customSection.classList.add('visible');
-                updateCustomInputs(data.settings);
-            } else {
-                customSection.classList.remove('visible');
+            // Show custom section if custom preset is selected and no specific device
+            if (!deviceId) {
+                const customSection = document.getElementById('customSection');
+                if (preset === 'custom') {
+                    customSection.classList.add('visible');
+                    updateCustomInputs(data.settings);
+                } else {
+                    customSection.classList.remove('visible');
+                }
             }
         }
     } catch (error) {
@@ -132,21 +170,140 @@ function updateCustomInputs(settings) {
 function updateUI(data) {
     if (data.settings) {
         currentSettings = data.settings;
-        updateStatusIndicator(data.settings.enabled);
-        updatePresetSelection(data.settings.preset);
+        updateStatusIndicator(data.settings.enabled || data.globalSettings?.enabled);
+        updatePresetSelection(data.settings.preset || data.globalSettings?.preset);
 
         // Show/hide custom section
         const customSection = document.getElementById('customSection');
-        if (data.settings.preset === 'custom') {
+        const preset = data.settings.preset || data.globalSettings?.preset;
+        if (preset === 'custom') {
             customSection.classList.add('visible');
-            updateCustomInputs(data.settings);
+            updateCustomInputs(data.settings || data.globalSettings);
         }
+    }
+
+    if (data.globalSettings) {
+        updateStatusIndicator(data.globalSettings.enabled);
+        updatePresetSelection(data.globalSettings.preset);
     }
 
     if (data.stats) {
         updateStats(data.stats);
     }
+
+    if (data.devices) {
+        devices = data.devices;
+        renderDevices(data.devices);
+    }
 }
+
+// Render connected devices
+function renderDevices(devices) {
+    const devicesGrid = document.getElementById('devicesGrid');
+    const deviceCount = document.getElementById('deviceCount');
+
+    deviceCount.textContent = devices.length;
+
+    if (devices.length === 0) {
+        devicesGrid.innerHTML = '<div class="no-devices">No devices connected yet. Connect a device using the proxy settings above.</div>';
+        return;
+    }
+
+    devicesGrid.innerHTML = '';
+
+    devices.forEach(device => {
+        const card = document.createElement('div');
+        card.className = 'device-card';
+
+        const deviceName = getDeviceName(device.userAgent);
+        const timeSinceLastSeen = Date.now() - device.lastSeen;
+        const isActive = timeSinceLastSeen < 60000; // Active if seen in last minute
+
+        card.innerHTML = `
+            <div class="device-header">
+                <div class="device-info">
+                    <h4>${deviceName}</h4>
+                    <p>${device.id}</p>
+                </div>
+                <div class="device-actions">
+                    <button class="btn-icon" onclick="removeDevice('${device.id}')" title="Remove device">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="device-stats">
+                <div class="device-stat">
+                    <span class="device-stat-label">Requests</span>
+                    <span class="device-stat-value">${device.requestCount || 0}</span>
+                </div>
+                <div class="device-stat">
+                    <span class="device-stat-label">Status</span>
+                    <span class="device-stat-value" style="color: ${isActive ? 'var(--success)' : 'var(--text-secondary)'}">
+                        ${isActive ? 'Active' : 'Idle'}
+                    </span>
+                </div>
+                <div class="device-stat">
+                    <span class="device-stat-label">Current Preset</span>
+                    <span class="device-stat-value">${device.settings?.preset || 'none'}</span>
+                </div>
+                <div class="device-stat">
+                    <span class="device-stat-label">Enabled</span>
+                    <span class="device-stat-value">${device.settings?.enabled ? 'Yes' : 'No'}</span>
+                </div>
+            </div>
+            <div class="device-preset-selector">
+                ${['none', '4g', '3g', '2g'].map(presetKey => `
+                    <button
+                        class="device-preset-btn ${device.settings?.preset === presetKey ? 'active' : ''}"
+                        onclick="selectDevicePreset('${device.id}', '${presetKey}')"
+                    >
+                        ${presets[presetKey]?.name || presetKey}
+                    </button>
+                `).join('')}
+            </div>
+        `;
+
+        devicesGrid.appendChild(card);
+    });
+}
+
+// Get device name from user agent
+function getDeviceName(userAgent) {
+    if (!userAgent || userAgent === 'Unknown') return 'Unknown Device';
+
+    if (userAgent.includes('iPhone')) return 'iPhone';
+    if (userAgent.includes('iPad')) return 'iPad';
+    if (userAgent.includes('Android')) {
+        if (userAgent.includes('Mobile')) return 'Android Phone';
+        return 'Android Tablet';
+    }
+    if (userAgent.includes('Mac')) return 'Mac';
+    if (userAgent.includes('Windows')) return 'Windows PC';
+    if (userAgent.includes('Linux')) return 'Linux PC';
+
+    return 'Unknown Device';
+}
+
+// Select preset for a specific device
+window.selectDevicePreset = async function(deviceId, preset) {
+    await selectPreset(preset, deviceId);
+};
+
+// Remove device
+window.removeDevice = async function(deviceId) {
+    try {
+        await fetch('/api/device/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceId }),
+        });
+    } catch (error) {
+        console.error('Failed to remove device:', error);
+    }
+};
 
 // Update status indicator
 function updateStatusIndicator(enabled) {
@@ -229,6 +386,11 @@ function setupEventListeners() {
         } catch (error) {
             console.error('Failed to reset statistics:', error);
         }
+    });
+
+    // Android instructions button
+    document.getElementById('androidInstructionsBtn').addEventListener('click', () => {
+        alert(`Android Proxy Setup:\n\n1. Open Settings > Wi-Fi\n2. Long press your connected network\n3. Select "Modify network"\n4. Show advanced options\n5. Set Proxy to "Manual"\n6. Enter Host: ${serverInfo.serverIp}\n7. Enter Port: ${serverInfo.proxyPort}\n8. Save`);
     });
 }
 

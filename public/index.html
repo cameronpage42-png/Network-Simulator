@@ -30,16 +30,75 @@
         </header>
 
         <section class="connection-info">
-            <h3>Proxy Configuration</h3>
-            <div class="info-grid">
-                <div class="info-item">
-                    <span class="info-label">Host</span>
-                    <span class="info-value" id="proxyHost">Loading...</span>
+            <h3>Quick Setup with QR Codes</h3>
+            <p class="info-text">Scan the QR code below to quickly configure your device's proxy settings</p>
+            <div class="qr-container">
+                <div class="qr-card">
+                    <h4>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+                            <line x1="12" y1="18" x2="12.01" y2="18"></line>
+                        </svg>
+                        iPhone / iPad
+                    </h4>
+                    <div class="qr-code" id="iosQR">
+                        <div class="qr-loading">Loading QR Code...</div>
+                    </div>
+                    <a href="/api/config/ios.mobileconfig" class="btn btn-small" download>Download iOS Profile</a>
+                    <small>Install the configuration profile to set up proxy automatically</small>
                 </div>
-                <div class="info-item">
-                    <span class="info-label">Port</span>
-                    <span class="info-value">8888</span>
+
+                <div class="qr-card">
+                    <h4>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+                            <line x1="12" y1="18" x2="12.01" y2="18"></line>
+                        </svg>
+                        Android
+                    </h4>
+                    <div class="qr-code" id="androidQR">
+                        <div class="qr-loading">Loading QR Code...</div>
+                    </div>
+                    <button class="btn btn-small" id="androidInstructionsBtn">View Instructions</button>
+                    <small>Scan to access setup instructions</small>
                 </div>
+
+                <div class="qr-card">
+                    <h4>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"></circle>
+                            <path d="m21 21-4.35-4.35"></path>
+                        </svg>
+                        Manual Setup
+                    </h4>
+                    <div class="manual-config">
+                        <div class="config-item">
+                            <span class="config-label">Host:</span>
+                            <span class="config-value" id="proxyHost">Loading...</span>
+                        </div>
+                        <div class="config-item">
+                            <span class="config-label">Port:</span>
+                            <span class="config-value" id="proxyPort">8888</span>
+                        </div>
+                    </div>
+                    <small>Manually configure these settings in your device's WiFi proxy settings</small>
+                </div>
+            </div>
+        </section>
+
+        <section class="devices-section" id="devicesSection">
+            <h2>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="9" cy="7" r="4"></circle>
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                </svg>
+                Connected Devices
+                <span class="device-count" id="deviceCount">0</span>
+            </h2>
+            <div id="devicesGrid" class="devices-grid">
+                <div class="no-devices">No devices connected yet. Connect a device using the proxy settings above.</div>
             </div>
         </section>
 

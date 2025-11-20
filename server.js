@@ -1,22 +1,26 @@
 const express = require('express');
 const http = require('http');
-const httpProxy = require('http-proxy');
 const url = require('url');
 const net = require('net');
 const { WebSocketServer } = require('ws');
+const QRCode = require('qrcode');
 
 const app = express();
 const port = 8080;
 const proxyPort = 8888;
 
-// Network simulation settings
-let networkSettings = {
+// Global default network settings
+let globalNetworkSettings = {
   enabled: false,
   preset: 'none',
-  bandwidth: 0, // bytes per second (0 = unlimited)
-  latency: 0, // milliseconds
-  packetLoss: 0, // percentage (0-100)
+  bandwidth: 0,
+  latency: 0,
+  packetLoss: 0,
 };
+
+// Per-device settings
+const deviceSettings = new Map();
+const connectedDevices = new Map();
 
 // Statistics
 let stats = {
@@ -42,37 +46,75 @@ const presets = {
 app.use(express.json());
 app.use(express.static('public'));
 
+// Get device ID from request
+function getDeviceId(req) {
+  // Use IP address as device ID (you could also use headers or cookies)
+  return req.ip || req.connection.remoteAddress || 'unknown';
+}
+
+// Get settings for a specific device
+function getDeviceSettings(deviceId) {
+  if (deviceSettings.has(deviceId)) {
+    return deviceSettings.get(deviceId);
+  }
+  return globalNetworkSettings;
+}
+
 // API Routes
 app.get('/api/status', (req, res) => {
+  const deviceId = getDeviceId(req);
+  const settings = getDeviceSettings(deviceId);
+
   res.json({
-    settings: networkSettings,
+    settings,
+    globalSettings: globalNetworkSettings,
     stats: {
       ...stats,
       uptime: Date.now() - stats.startTime,
     },
     presets,
+    deviceId,
+    devices: Array.from(connectedDevices.entries()).map(([id, device]) => ({
+      id,
+      ...device,
+      settings: getDeviceSettings(id),
+    })),
+    serverIp: getLocalIP(),
+    proxyPort,
   });
 });
 
 app.post('/api/settings', (req, res) => {
-  const { enabled, preset, bandwidth, latency, packetLoss } = req.body;
+  const { enabled, preset, bandwidth, latency, packetLoss, deviceId, applyToAll } = req.body;
+  const currentDeviceId = deviceId || getDeviceId(req);
 
-  if (enabled !== undefined) networkSettings.enabled = enabled;
+  let targetSettings;
+
+  if (applyToAll) {
+    targetSettings = globalNetworkSettings;
+  } else {
+    if (!deviceSettings.has(currentDeviceId)) {
+      deviceSettings.set(currentDeviceId, { ...globalNetworkSettings });
+    }
+    targetSettings = deviceSettings.get(currentDeviceId);
+  }
+
+  if (enabled !== undefined) targetSettings.enabled = enabled;
 
   if (preset && presets[preset]) {
-    networkSettings.preset = preset;
-    networkSettings.bandwidth = presets[preset].bandwidth;
-    networkSettings.latency = presets[preset].latency;
-    networkSettings.packetLoss = presets[preset].packetLoss;
+    targetSettings.preset = preset;
+    targetSettings.bandwidth = presets[preset].bandwidth;
+    targetSettings.latency = presets[preset].latency;
+    targetSettings.packetLoss = presets[preset].packetLoss;
   }
 
   if (preset === 'custom') {
-    if (bandwidth !== undefined) networkSettings.bandwidth = bandwidth;
-    if (latency !== undefined) networkSettings.latency = latency;
-    if (packetLoss !== undefined) networkSettings.packetLoss = packetLoss;
+    if (bandwidth !== undefined) targetSettings.bandwidth = bandwidth;
+    if (latency !== undefined) targetSettings.latency = latency;
+    if (packetLoss !== undefined) targetSettings.packetLoss = packetLoss;
   }
 
-  res.json({ success: true, settings: networkSettings });
+  res.json({ success: true, settings: targetSettings });
   broadcastStatus();
 });
 
@@ -84,23 +126,152 @@ app.post('/api/reset-stats', (req, res) => {
   broadcastStatus();
 });
 
+app.post('/api/device/remove', (req, res) => {
+  const { deviceId } = req.body;
+  if (deviceId) {
+    deviceSettings.delete(deviceId);
+    connectedDevices.delete(deviceId);
+    broadcastStatus();
+  }
+  res.json({ success: true });
+});
+
+// QR Code generation for proxy setup
+app.get('/api/qr/android', async (req, res) => {
+  try {
+    const serverIp = getLocalIP();
+    // Android can use a manual proxy configuration URL or PAC file
+    // For simplicity, we'll create a WiFi QR code with proxy settings
+    const wifiConfig = `WIFI:T:nopass;S:NetworkSimulator;H:true;P:${serverIp}:${proxyPort};;`;
+
+    // Generate QR code as data URL
+    const qrDataUrl = await QRCode.toDataURL(wifiConfig, {
+      width: 400,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#ffffff',
+      },
+    });
+
+    res.json({ qrCode: qrDataUrl, config: wifiConfig });
+  } catch (error) {
+    console.error('QR generation error:', error);
+    res.status(500).json({ error: 'Failed to generate QR code' });
+  }
+});
+
+app.get('/api/qr/proxy', async (req, res) => {
+  try {
+    const serverIp = getLocalIP();
+    // Create a URL that opens proxy settings with pre-filled values
+    // Format: proxy://host:port
+    const proxyConfig = `http://${serverIp}:${port}`;
+
+    const qrDataUrl = await QRCode.toDataURL(proxyConfig, {
+      width: 400,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#ffffff',
+      },
+    });
+
+    res.json({
+      qrCode: qrDataUrl,
+      config: {
+        host: serverIp,
+        port: proxyPort,
+        url: proxyConfig,
+      }
+    });
+  } catch (error) {
+    console.error('QR generation error:', error);
+    res.status(500).json({ error: 'Failed to generate QR code' });
+  }
+});
+
+// iOS Configuration Profile
+app.get('/api/config/ios.mobileconfig', (req, res) => {
+  const serverIp = getLocalIP();
+  const mobileConfig = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadType</key>
+            <string>com.apple.proxy.http.global</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>PayloadIdentifier</key>
+            <string>com.networksimulator.proxy</string>
+            <key>PayloadUUID</key>
+            <string>A1B2C3D4-E5F6-7890-ABCD-EF1234567890</string>
+            <key>PayloadDisplayName</key>
+            <string>Network Simulator Proxy</string>
+            <key>ProxyType</key>
+            <string>Manual</string>
+            <key>HTTPEnable</key>
+            <integer>1</integer>
+            <key>HTTPProxy</key>
+            <string>${serverIp}</string>
+            <key>HTTPPort</key>
+            <integer>${proxyPort}</integer>
+            <key>HTTPSEnable</key>
+            <integer>1</integer>
+            <key>HTTPSProxy</key>
+            <string>${serverIp}</string>
+            <key>HTTPSPort</key>
+            <integer>${proxyPort}</integer>
+        </dict>
+    </array>
+    <key>PayloadDisplayName</key>
+    <string>Network Simulator Proxy</string>
+    <key>PayloadIdentifier</key>
+    <string>com.networksimulator</string>
+    <key>PayloadRemovalDisallowed</key>
+    <false/>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>B2C3D4E5-F6A7-8901-BCDE-F12345678901</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+</dict>
+</plist>`;
+
+  res.setHeader('Content-Type', 'application/x-apple-aspen-config');
+  res.setHeader('Content-Disposition', 'attachment; filename="NetworkSimulator.mobileconfig"');
+  res.send(mobileConfig);
+});
+
 // Create HTTP server for web interface
 const server = http.createServer(app);
 
 // WebSocket for real-time updates
 const wss = new WebSocketServer({ server });
 
-wss.on('connection', (ws) => {
-  console.log('WebSocket client connected');
+wss.on('connection', (ws, req) => {
+  const deviceId = req.socket.remoteAddress;
+  console.log(`WebSocket client connected: ${deviceId}`);
+
   // Send current status immediately
   ws.send(JSON.stringify({
     type: 'status',
     data: {
-      settings: networkSettings,
+      settings: getDeviceSettings(deviceId),
+      globalSettings: globalNetworkSettings,
       stats: {
         ...stats,
         uptime: Date.now() - stats.startTime,
       },
+      devices: Array.from(connectedDevices.entries()).map(([id, device]) => ({
+        id,
+        ...device,
+        settings: getDeviceSettings(id),
+      })),
     },
   }));
 });
@@ -109,11 +280,17 @@ function broadcastStatus() {
   const message = JSON.stringify({
     type: 'status',
     data: {
-      settings: networkSettings,
+      settings: globalNetworkSettings,
+      globalSettings: globalNetworkSettings,
       stats: {
         ...stats,
         uptime: Date.now() - stats.startTime,
       },
+      devices: Array.from(connectedDevices.entries()).map(([id, device]) => ({
+        id,
+        ...device,
+        settings: getDeviceSettings(id),
+      })),
     },
   });
 
@@ -127,7 +304,7 @@ function broadcastStatus() {
 // Throttle stream - limits bandwidth
 class ThrottleStream {
   constructor(bandwidth) {
-    this.bandwidth = bandwidth; // bytes per second
+    this.bandwidth = bandwidth;
     this.lastTime = Date.now();
     this.buffer = [];
     this.processing = false;
@@ -155,11 +332,10 @@ class ThrottleStream {
     const { chunk, callback } = this.buffer.shift();
 
     const now = Date.now();
-    const elapsed = (now - this.lastTime) / 1000; // seconds
+    const elapsed = (now - this.lastTime) / 1000;
     const allowedBytes = this.bandwidth * elapsed;
 
     if (chunk.length > allowedBytes && elapsed < 1) {
-      // Need to wait
       const waitTime = ((chunk.length / this.bandwidth) - elapsed) * 1000;
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
@@ -167,7 +343,6 @@ class ThrottleStream {
     this.lastTime = Date.now();
     callback(chunk);
 
-    // Process next item
     if (this.buffer.length > 0) {
       setImmediate(() => this.processBuffer());
     } else {
@@ -176,156 +351,251 @@ class ThrottleStream {
   }
 }
 
+// Get settings for a client IP
+function getClientSettings(clientIp) {
+  if (deviceSettings.has(clientIp)) {
+    return deviceSettings.get(clientIp);
+  }
+  return globalNetworkSettings;
+}
+
 // Simulate packet loss
-function shouldDropPacket() {
-  if (!networkSettings.enabled || networkSettings.packetLoss === 0) {
+function shouldDropPacket(settings) {
+  if (!settings.enabled || settings.packetLoss === 0) {
     return false;
   }
-  return Math.random() * 100 < networkSettings.packetLoss;
+  return Math.random() * 100 < settings.packetLoss;
 }
 
 // Add latency
-async function addLatency() {
-  if (!networkSettings.enabled || networkSettings.latency === 0) {
+async function addLatency(settings) {
+  if (!settings.enabled || settings.latency === 0) {
     return;
   }
-  await new Promise(resolve => setTimeout(resolve, networkSettings.latency));
+  await new Promise(resolve => setTimeout(resolve, settings.latency));
 }
 
-// Create proxy server
-const proxy = httpProxy.createProxyServer({});
+// Track device connection
+function trackDevice(ip, userAgent) {
+  if (!connectedDevices.has(ip)) {
+    connectedDevices.set(ip, {
+      firstSeen: Date.now(),
+      lastSeen: Date.now(),
+      userAgent,
+      requestCount: 1,
+    });
+  } else {
+    const device = connectedDevices.get(ip);
+    device.lastSeen = Date.now();
+    device.requestCount++;
+  }
+  broadcastStatus();
+}
 
-const proxyServer = http.createServer(async (req, res) => {
+// Create proxy server with better error handling
+const proxyServer = http.createServer((req, res) => {
   stats.totalRequests++;
   stats.activeConnections++;
 
-  // Add latency
-  await addLatency();
+  const clientIp = req.socket.remoteAddress;
+  const userAgent = req.headers['user-agent'] || 'Unknown';
 
-  // Check for packet loss (simulate by dropping request)
-  if (shouldDropPacket()) {
-    res.writeHead(503, { 'Content-Type': 'text/plain' });
-    res.end('Network packet dropped (simulated packet loss)');
+  trackDevice(clientIp, userAgent);
+
+  res.on('close', () => {
     stats.activeConnections--;
-    broadcastStatus();
-    return;
-  }
+  });
 
-  const targetUrl = req.url;
-  const parsedUrl = url.parse(targetUrl);
-
-  // Extract target from absolute URL
-  const target = `${parsedUrl.protocol}//${parsedUrl.host}`;
-
-  // Bandwidth throttling
-  const throttle = new ThrottleStream(networkSettings.enabled ? networkSettings.bandwidth : 0);
-
-  const originalWrite = res.write.bind(res);
-  const originalEnd = res.end.bind(res);
-
-  res.write = function(chunk, ...args) {
-    if (chunk) {
-      stats.bytesTransferred += chunk.length;
-      throttle.write(chunk, (throttledChunk) => {
-        originalWrite(throttledChunk, ...args);
-      });
+  res.on('error', (err) => {
+    if (err.code !== 'ECONNRESET') {
+      console.error('Response error:', err.message);
     }
-  };
+  });
 
-  res.end = function(chunk, ...args) {
-    if (chunk) {
-      stats.bytesTransferred += chunk.length;
-      throttle.write(chunk, (throttledChunk) => {
-        originalEnd(throttledChunk, ...args);
-        stats.activeConnections--;
-        broadcastStatus();
-      });
-    } else {
-      originalEnd(...args);
-      stats.activeConnections--;
-      broadcastStatus();
-    }
-  };
-
-  try {
-    proxy.web(req, res, { target, changeOrigin: true });
-  } catch (error) {
-    console.error('Proxy error:', error);
-    res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end('Proxy error');
-    stats.activeConnections--;
-  }
+  handleHttpRequest(req, res, clientIp);
 });
 
-// Handle CONNECT method for HTTPS proxying
+async function handleHttpRequest(req, res, clientIp) {
+  const settings = getClientSettings(clientIp);
+
+  try {
+    await addLatency(settings);
+
+    if (shouldDropPacket(settings)) {
+      res.writeHead(503, { 'Content-Type': 'text/plain' });
+      res.end('Network packet dropped (simulated packet loss)');
+      stats.activeConnections--;
+      return;
+    }
+
+    const targetUrl = url.parse(req.url);
+    if (!targetUrl.host) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Bad Request');
+      stats.activeConnections--;
+      return;
+    }
+
+    const targetPort = targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80);
+    const targetHost = targetUrl.hostname;
+
+    const proxyReq = http.request({
+      hostname: targetHost,
+      port: targetPort,
+      path: targetUrl.path,
+      method: req.method,
+      headers: req.headers,
+    });
+
+    proxyReq.on('error', (err) => {
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'text/plain' });
+        res.end('Bad Gateway');
+      }
+      stats.activeConnections--;
+    });
+
+    proxyReq.on('response', (proxyRes) => {
+      const throttle = new ThrottleStream(settings.enabled ? settings.bandwidth : 0);
+
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+
+      proxyRes.on('data', (chunk) => {
+        stats.bytesTransferred += chunk.length;
+        throttle.write(chunk, (throttledChunk) => {
+          if (!res.writableEnded) {
+            res.write(throttledChunk);
+          }
+        });
+      });
+
+      proxyRes.on('end', () => {
+        res.end();
+        stats.activeConnections--;
+      });
+    });
+
+    req.on('data', (chunk) => {
+      proxyReq.write(chunk);
+    });
+
+    req.on('end', () => {
+      proxyReq.end();
+    });
+
+  } catch (error) {
+    console.error('Proxy error:', error.message);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Internal Server Error');
+    }
+    stats.activeConnections--;
+  }
+}
+
+// Handle CONNECT method for HTTPS proxying with better error handling
 proxyServer.on('connect', async (req, clientSocket, head) => {
   stats.totalRequests++;
   stats.activeConnections++;
 
-  // Add latency
-  await addLatency();
+  const clientIp = clientSocket.remoteAddress;
+  trackDevice(clientIp, req.headers['user-agent'] || 'Unknown');
 
-  // Check for packet loss
-  if (shouldDropPacket()) {
-    clientSocket.end();
-    stats.activeConnections--;
-    broadcastStatus();
-    return;
-  }
+  const settings = getClientSettings(clientIp);
 
-  const [hostname, port] = req.url.split(':');
+  let serverSocket = null;
+  let isConnected = false;
 
-  const serverSocket = net.connect(port || 443, hostname, () => {
-    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+  // Cleanup function
+  const cleanup = () => {
+    if (!isConnected) {
+      isConnected = true;
+      stats.activeConnections--;
 
-    // Bandwidth throttling for HTTPS
-    const upstreamThrottle = new ThrottleStream(networkSettings.enabled ? networkSettings.bandwidth : 0);
-    const downstreamThrottle = new ThrottleStream(networkSettings.enabled ? networkSettings.bandwidth : 0);
+      if (clientSocket && !clientSocket.destroyed) {
+        clientSocket.destroy();
+      }
+      if (serverSocket && !serverSocket.destroyed) {
+        serverSocket.destroy();
+      }
+    }
+  };
 
-    // Client to server
-    clientSocket.on('data', (chunk) => {
-      stats.bytesTransferred += chunk.length;
-      upstreamThrottle.write(chunk, (throttledChunk) => {
-        serverSocket.write(throttledChunk);
-      });
-    });
-
-    // Server to client
-    serverSocket.on('data', (chunk) => {
-      stats.bytesTransferred += chunk.length;
-      downstreamThrottle.write(chunk, (throttledChunk) => {
-        clientSocket.write(throttledChunk);
-      });
-    });
-
-    serverSocket.pipe(clientSocket);
-
-    broadcastStatus();
-  });
-
-  serverSocket.on('error', (err) => {
-    console.error('Server socket error:', err);
-    clientSocket.end();
-    stats.activeConnections--;
-  });
+  // Set timeouts
+  clientSocket.setTimeout(30000);
 
   clientSocket.on('error', (err) => {
-    console.error('Client socket error:', err);
-    serverSocket.end();
-    stats.activeConnections--;
+    if (err.code !== 'ECONNRESET') {
+      console.error('Client socket error:', err.message);
+    }
+    cleanup();
   });
 
-  serverSocket.on('end', () => {
-    stats.activeConnections--;
-    broadcastStatus();
+  clientSocket.on('timeout', () => {
+    cleanup();
   });
-});
 
-proxy.on('error', (err, req, res) => {
-  console.error('Proxy error:', err);
-  if (res.writeHead) {
-    res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end('Bad Gateway');
+  try {
+    await addLatency(settings);
+
+    if (shouldDropPacket(settings)) {
+      clientSocket.end();
+      stats.activeConnections--;
+      return;
+    }
+
+    const [hostname, port] = req.url.split(':');
+
+    serverSocket = net.connect(port || 443, hostname);
+
+    serverSocket.setTimeout(30000);
+
+    serverSocket.on('error', (err) => {
+      if (err.code !== 'ECONNRESET') {
+        console.error('Server socket error:', err.message);
+      }
+      cleanup();
+    });
+
+    serverSocket.on('timeout', () => {
+      cleanup();
+    });
+
+    serverSocket.on('connect', () => {
+      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+
+      const upstreamThrottle = new ThrottleStream(settings.enabled ? settings.bandwidth : 0);
+      const downstreamThrottle = new ThrottleStream(settings.enabled ? settings.bandwidth : 0);
+
+      clientSocket.on('data', (chunk) => {
+        if (!serverSocket.destroyed) {
+          stats.bytesTransferred += chunk.length;
+          upstreamThrottle.write(chunk, (throttledChunk) => {
+            if (!serverSocket.destroyed) {
+              serverSocket.write(throttledChunk);
+            }
+          });
+        }
+      });
+
+      serverSocket.on('data', (chunk) => {
+        if (!clientSocket.destroyed) {
+          stats.bytesTransferred += chunk.length;
+          downstreamThrottle.write(chunk, (throttledChunk) => {
+            if (!clientSocket.destroyed) {
+              clientSocket.write(throttledChunk);
+            }
+          });
+        }
+      });
+
+      clientSocket.on('end', cleanup);
+      serverSocket.on('end', cleanup);
+    });
+
+  } catch (error) {
+    console.error('CONNECT error:', error.message);
+    cleanup();
   }
 });
 
@@ -354,7 +624,6 @@ function getLocalIP() {
 
   for (const name of Object.keys(nets)) {
     for (const net of nets[name]) {
-      // Skip over non-IPv4 and internal addresses
       if (net.family === 'IPv4' && !net.internal) {
         return net.address;
       }
@@ -366,3 +635,16 @@ function getLocalIP() {
 
 // Broadcast stats periodically
 setInterval(broadcastStatus, 2000);
+
+// Clean up old devices (not seen in 5 minutes)
+setInterval(() => {
+  const now = Date.now();
+  const fiveMinutes = 5 * 60 * 1000;
+
+  for (const [id, device] of connectedDevices.entries()) {
+    if (now - device.lastSeen > fiveMinutes) {
+      connectedDevices.delete(id);
+      deviceSettings.delete(id);
+    }
+  }
+}, 60000);
